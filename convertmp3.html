@@ -1,0 +1,270 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Conversor Vídeo → MP3 (HTML/CSS/JS)</title>
+  <style>
+    :root{font-family:Inter, system-ui, Arial; --accent:#0b84ff}
+    body{background:#f4f7fb;color:#111;margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+    .card{width:100%;max-width:920px;background:#fff;border-radius:12px;box-shadow:0 8px 30px rgba(8,30,60,0.07);padding:20px}
+    h1{font-size:20px;margin:0 0 8px}
+    p.lead{color:#4b5563;margin:0 0 18px}
+    .row{display:flex;gap:12px;flex-wrap:wrap}
+    .col{flex:1 1 240px}
+    label{display:block;font-size:13px;margin-bottom:6px}
+    input[type=file]{display:block}
+    button{background:var(--accent);color:#fff;border:0;padding:10px 14px;border-radius:8px;cursor:pointer}
+    button.ghost{background:transparent;color:var(--accent);border:1px solid #e6eefb}
+    pre{background:#0b1220;color:#dbeafe;padding:12px;border-radius:8px;overflow:auto;font-size:13px}
+    .log{height:140px;overflow:auto;margin-top:10px;background:#0f1724;color:#d1fae5;padding:10px;border-radius:8px}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    .small{font-size:13px}
+    .file-list{margin-top:10px}
+    .file-item{padding:8px 10px;border-radius:8px;background:#f1f5f9;margin-bottom:8px;display:flex;align-items:center;justify-content:space-between}
+    .file-meta{font-size:13px;color:#334155}
+    footer{margin-top:12px;font-size:12px;color:#64748b}
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Conversor Vídeo → MP3 (local)</h1>
+    <p class="lead">Escolha vídeos do seu computador, converta para MP3 no navegador (ffmpeg.wasm). Você pode salvar os arquivos convertidos e/ou os vídeos originais em pastas locais (File System Access API) ou baixar manualmente se o navegador não suportar.</p>
+
+    <div class="row">
+      <div class="col">
+        <label for="videoInput">Selecionar vídeo(s)</label>
+        <input id="videoInput" type="file" accept="video/*" multiple />
+
+        <div class="file-list" id="fileList"></div>
+
+        <div style="margin-top:8px" class="controls">
+          <button id="convertBtn">Converter selecionados → MP3</button>
+          <button id="saveVideoBtn" class="ghost">Salvar vídeo(s) na pasta</button>
+          <button id="chooseMp3Folder" class="ghost small">Escolher pasta MP3</button>
+          <button id="chooseVideoFolder" class="ghost small">Escolher pasta Vídeo</button>
+        </div>
+
+        <div style="margin-top:10px">
+          <label class="small">Qualidade MP3 (CBR kbps)</label>
+          <input id="bitrate" type="number" value="192" min="64" max="320" />
+        </div>
+
+      </div>
+
+      <div class="col">
+        <label>Status / Log</label>
+        <div class="log" id="log">Pronto.</div>
+
+        <label style="margin-top:8px">Progresso detalhado</label>
+        <pre id="progress">Nenhuma tarefa iniciada.</pre>
+      </div>
+    </div>
+
+    <footer>
+      Observações: Esta aplicação roda totalmente no navegador usando <code>ffmpeg.wasm</code>. A criação/seleção de pastas locais funciona em navegadores baseados em Chromium (Chrome, Edge e derivados) que suportam a File System Access API. Se o navegador não suportar, o arquivo convertido será baixado via link.
+    </footer>
+  </div>
+
+  <script type="module">
+    // Importa ffmpeg.wasm via CDN
+    import { createFFmpeg, fetchFile } from 'https://unpkg.com/@ffmpeg/ffmpeg@0.12.2/dist/ffmpeg.min.js';
+
+    const ffmpeg = createFFmpeg({ log: true });
+    const videoInput = document.getElementById('videoInput');
+    const fileList = document.getElementById('fileList');
+    const convertBtn = document.getElementById('convertBtn');
+    const logEl = document.getElementById('log');
+    const progressEl = document.getElementById('progress');
+    const saveVideoBtn = document.getElementById('saveVideoBtn');
+    const chooseMp3FolderBtn = document.getElementById('chooseMp3Folder');
+    const chooseVideoFolderBtn = document.getElementById('chooseVideoFolder');
+    const bitrateInput = document.getElementById('bitrate');
+
+    let selectedFiles = [];
+    let mp3DirHandle = null; // handle da pasta escolhida para mp3
+    let videoDirHandle = null; // handle da pasta escolhida para vídeos
+
+    function log(msg){
+      const time = new Date().toLocaleTimeString();
+      logEl.textContent += `\n[${time}] ${msg}`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setProgress(text){
+      progressEl.textContent = text;
+    }
+
+    videoInput.addEventListener('change', e => {
+      selectedFiles = Array.from(e.target.files);
+      renderFileList();
+    });
+
+    function renderFileList(){
+      fileList.innerHTML = '';
+      if(selectedFiles.length === 0){
+        fileList.textContent = 'Nenhum arquivo selecionado.';
+        return;
+      }
+      selectedFiles.forEach((f, idx) => {
+        const item = document.createElement('div');
+        item.className = 'file-item';
+        item.innerHTML = `<div class="file-meta">${f.name} • ${(f.size/1024/1024).toFixed(2)} MB</div>`;
+        const actions = document.createElement('div');
+        actions.innerHTML = `
+          <button data-idx="${idx}" class="ghost small">Salvar vídeo</button>
+          <button data-idx="${idx}" class="convert single small">Converter</button>
+        `;
+        item.appendChild(actions);
+        fileList.appendChild(item);
+      });
+
+      // attach listeners for per-file buttons
+      fileList.querySelectorAll('button.convert.single').forEach(btn => {
+        btn.addEventListener('click', async ev => {
+          const idx = Number(ev.currentTarget.dataset.idx);
+          await convertFiles([selectedFiles[idx]]);
+        });
+      });
+
+      fileList.querySelectorAll('button.ghost').forEach(btn => {
+        if(btn.classList.contains('small')) return; // skip styled ones
+      });
+
+      // salvar vídeo individual
+      fileList.querySelectorAll('button.ghost').forEach(btn => {
+        btn.addEventListener('click', async ev => {
+          const idx = Number(ev.currentTarget.dataset.idx);
+          await saveVideoFile(selectedFiles[idx]);
+        });
+      });
+    }
+
+    // Escolher pasta para MP3
+    chooseMp3FolderBtn.addEventListener('click', async () => {
+      try{
+        if(!window.showDirectoryPicker) throw new Error('File System Access API não disponível neste navegador.');
+        mp3DirHandle = await window.showDirectoryPicker();
+        log('Pasta MP3 selecionada: ' + (mp3DirHandle.name || 'diretório selecionado'));
+      }catch(err){
+        log('Erro ao escolher pasta MP3: ' + err.message);
+        alert('Seu navegador pode não suportar seleção de pastas. O arquivo será baixado em vez disso.');
+      }
+    });
+
+    chooseVideoFolderBtn.addEventListener('click', async () => {
+      try{
+        if(!window.showDirectoryPicker) throw new Error('File System Access API não disponível neste navegador.');
+        videoDirHandle = await window.showDirectoryPicker();
+        log('Pasta Vídeos selecionada: ' + (videoDirHandle.name || 'diretório selecionado'));
+      }catch(err){
+        log('Erro ao escolher pasta Vídeos: ' + err.message);
+        alert('Seu navegador pode não suportar seleção de pastas. O vídeo será baixado em vez disso.');
+      }
+    });
+
+    saveVideoBtn.addEventListener('click', async () => {
+      if(selectedFiles.length === 0){ alert('Selecione ao menos um vídeo.'); return; }
+      for(const f of selectedFiles) await saveVideoFile(f);
+    });
+
+    async function saveVideoFile(file){
+      try{
+        if(window.showDirectoryPicker && videoDirHandle){
+          const fh = await videoDirHandle.getFileHandle(file.name, { create: true });
+          const writable = await fh.createWritable();
+          await writable.write(file);
+          await writable.close();
+          log('Vídeo salvo: ' + file.name);
+        }else{
+          // fallback: forçar download
+          const url = URL.createObjectURL(file);
+          const a = document.createElement('a');
+          a.href = url; a.download = file.name; document.body.appendChild(a); a.click(); a.remove();
+          URL.revokeObjectURL(url);
+          log('Vídeo baixado via link: ' + file.name);
+        }
+      }catch(err){
+        log('Erro salvando vídeo: ' + err.message);
+      }
+    }
+
+    // Converter botão global
+    convertBtn.addEventListener('click', async () => {
+      if(selectedFiles.length === 0){ alert('Selecione ao menos um vídeo.'); return; }
+      await convertFiles(selectedFiles);
+    });
+
+    async function ensureFFmpegLoaded(){
+      if(!ffmpeg.isLoaded()){
+        setProgress('Carregando ffmpeg.wasm — isto pode levar alguns segundos...');
+        log('Carregando ffmpeg.wasm...');
+        await ffmpeg.load();
+        log('ffmpeg carregado.');
+        setProgress('ffmpeg pronto.');
+      }
+    }
+
+    async function convertFiles(files){
+      try{
+        await ensureFFmpegLoaded();
+      }catch(err){
+        log('Falha ao carregar ffmpeg: ' + err.message);
+        return;
+      }
+
+      for(const file of files){
+        try{
+          setProgress(`Convertendo ${file.name} ...`);
+          log('Iniciando conversão: ' + file.name);
+
+          const inName = `input_${Date.now()}_${file.name.replace(/[^a-z0-9.]/gi,'_')}`;
+          const outName = file.name.replace(/\.[^/.]+$/, '') + '.mp3';
+
+          // escreve arquivo no FS do ffmpeg.wasm
+          ffmpeg.FS('writeFile', inName, await fetchFile(file));
+
+          // Executa conversão (com bitrate configurável)
+          const kbps = Number(bitrateInput.value) || 192;
+          // Comando tentativo que produz mp3 -- dependendo do build do ffmpeg, codecs podem variar.
+          await ffmpeg.run('-i', inName, '-vn', '-b:a', `${kbps}k`, '-f', 'mp3', outName);
+
+          // lê resultado
+          const data = ffmpeg.FS('readFile', outName);
+          const blob = new Blob([data.buffer], { type: 'audio/mpeg' });
+
+          // salvar via File System Access API se disponível e pasta selecionada
+          if(window.showDirectoryPicker && mp3DirHandle){
+            const fh = await mp3DirHandle.getFileHandle(outName, { create: true });
+            const writable = await fh.createWritable();
+            await writable.write(blob);
+            await writable.close();
+            log('MP3 salvo na pasta: ' + outName);
+          }else{
+            // fallback: criar link para download
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url; a.download = outName; document.body.appendChild(a); a.click(); a.remove();
+            URL.revokeObjectURL(url);
+            log('MP3 disponível para download: ' + outName);
+          }
+
+          // limpa arquivos temporários do FS do ffmpeg
+          try{ ffmpeg.FS('unlink', inName); ffmpeg.FS('unlink', outName); }catch(e){}
+
+          setProgress(`Conversão concluída: ${outName}`);
+        }catch(err){
+          log('Erro convertendo ' + file.name + ': ' + err.message);
+          setProgress('Erro: ver log.');
+        }
+      }
+
+      setTimeout(()=> setProgress('Pronto.'), 800);
+    }
+
+    // Inicial log minimal
+    log('Aplicação pronta. Selecione vídeos para começar.');
+
+  </script>
+</body>
+</html>
